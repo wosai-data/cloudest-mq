@@ -2,11 +2,22 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
 
+         <!--
   <parent>
     <groupId>com.wosai</groupId>
     <artifactId>common-parent</artifactId>
     <version>2.0-SNAPSHOT</version>
   </parent>
+  -->
+  <properties>
+    <java.version>1.8</java.version>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!--
+    <kafka.version>0.10.1.1-SNAPSHOT</kafka.version>
+    -->
+    <kafka.version>0.10.1.0</kafka.version>
+    <kafka.scala.version>2.11</kafka.scala.version>
+  </properties>
 
   <modelVersion>4.0.0</modelVersion>
   <name>Cloudest MQ</name>
@@ -19,7 +30,25 @@
     <dependency>
       <groupId>org.apache.kafka</groupId>
       <artifactId>kafka-clients</artifactId>
-      <version>0.10.1.0</version>
+      <version>${kafka.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.kafka</groupId>
+      <artifactId>kafka_${kafka.scala.version}</artifactId>
+      <version>${kafka.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-core</artifactId>
+      <version>2.8.1</version>
+    </dependency>
+
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.8.1</version>
     </dependency>
 
     <dependency>
@@ -61,6 +90,16 @@
           </execution>
         </executions>
 
+      </plugin>
+      <plugin>
+	<groupId>org.apache.maven.plugins</groupId>
+	<artifactId>maven-compiler-plugin</artifactId>
+	<version>3.3</version>
+	<inherited>true</inherited>
+	<configuration>
+	  <source>${java.version}</source>
+	  <target>${java.version}</target>
+	</configuration>
       </plugin>
     </plugins>
 
