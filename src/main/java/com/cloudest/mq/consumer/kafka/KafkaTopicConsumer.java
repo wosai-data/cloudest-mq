@@ -26,9 +26,10 @@ public class KafkaTopicConsumer<T> extends Thread implements TopicConsumer<T>  {
 
     public KafkaTopicConsumer(String topic, String appId, Deserializer<T> deserializer, Properties properties) {
         // TODO make these configurable
-        int bufferSize = Integer.parseInt(properties.getProperty("cloudest.mq.consumer.kafka.record.queue.buffer.size", "1000"));
-        this.recordQueue = new TopicRecordQueue(topic, bufferSize);
+        int softCapacity = Integer.parseInt(properties.getProperty("cloudest.mq.consumer.kafka.record.queue.soft.capacity", "5000"));
+        this.recordQueue = new TopicRecordQueue(topic, softCapacity);
         this.consumerThread = new ConsumerThread(topic, appId, recordQueue, properties);
+        this.recordQueue.setIOThread(this.consumerThread);
         this.deserializer = deserializer;
     }
 

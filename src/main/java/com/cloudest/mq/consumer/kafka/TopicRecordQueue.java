@@ -1,16 +1,22 @@
 package com.cloudest.mq.consumer.kafka;
 
 import com.cloudest.mq.common.MessagingException;
+
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -42,11 +48,22 @@ public class TopicRecordQueue {
     private final ReadWriteLock partInfoLock = new ReentrantReadWriteLock();
     private final Map<Integer, PartitionInfo> partitionInfos;
     private final BlockingQueue<ConsumerRecord<byte[], byte[]>> queue;
+    private int softCapacity = 5000;
+    private int belowRedzone = 3750;
+    private ConsumerThread ioThread;
 
-    public TopicRecordQueue(String topic, int bufferSize) {
+    public TopicRecordQueue(String topic, int softCapacity) {
         this.topic = topic;
         this.partitionInfos = new HashMap<>();
-        this.queue = new LinkedBlockingQueue<>(bufferSize);
+        if (softCapacity > 0) {
+            this.softCapacity = softCapacity;
+            this.belowRedzone = softCapacity * 3 / 4;
+        }
+        this.queue = new LinkedBlockingQueue<>();
+    }
+
+    public void setIOThread(ConsumerThread thread) {
+        this.ioThread = thread;
     }
 
     public void assignPartition(TopicPartition partition) {
@@ -59,6 +76,13 @@ public class TopicRecordQueue {
         }
     }
 
+    public List<TopicPartition> assignedPartitions() {
+        List<TopicPartition> partitions = new ArrayList<>();
+        for(Integer partition:  partitionInfos.keySet()) {
+            partitions.add(new TopicPartition(topic, partition));
+        }
+        return partitions;
+    }
     public void revokePartition(TopicPartition partition) {
         partInfoLock.writeLock().lock();
         try {
@@ -96,17 +120,28 @@ public class TopicRecordQueue {
         }
     }
 
+    private void wakeupIOThreadIfNecessary() {
+        if (isBelowRedzone()) {
+            ioThread.wakeupBlockingPoll();
+        }
+    }
+
     public ConsumerRecord<byte[], byte[]> poll() throws InterruptedException {
 
-        ConsumerRecord<byte[], byte[]> record = queue.take();
+        wakeupIOThreadIfNecessary();
 
-        if (!partitionVailid(record.partition())) {
-            log.warn("Partition '{}' maybe revoked", record.partition());
-            return poll();
+        while (true) {
+            ConsumerRecord<byte[], byte[]> record = queue.take();
+            
+            wakeupIOThreadIfNecessary();
+
+            if (!partitionVailid(record.partition())) {
+                log.warn("Partition '{}' maybe revoked", record.partition());
+            }else {
+                rememberLatestConsumed(record.partition(), record.offset());
+                return record;
+            }
         }
-
-        rememberLatestConsumed(record.partition(), record.offset());
-        return record;
     }
 
     /**
@@ -123,6 +158,14 @@ public class TopicRecordQueue {
             count++;
         }
         return count;
+    }
+
+    public boolean isFull() {
+        return queue.size() >= softCapacity; 
+    }
+    
+    public boolean isBelowRedzone() {
+        return queue.size() < belowRedzone;
     }
 
     public int size() {
