@@ -50,6 +50,17 @@ public class ToolOptions {
     public String[] getMulti(String opt) {
         return cmd.getOptionValues(opt);
     }
+    public int[] getMultiAsInt(String opt) {
+        String[] values = getMulti(opt);
+        if (values == null) {
+            return null;
+        }
+        int[] intValues = new int[values.length];
+        for(int i=0; i<values.length; ++i) {
+            intValues[i] = Integer.parseInt(values[i]);
+        }
+        return intValues;
+    }
     public boolean has(String opt) {
         return cmd.hasOption(opt);
     }

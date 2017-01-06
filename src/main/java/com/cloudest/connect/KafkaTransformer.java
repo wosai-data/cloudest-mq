@@ -23,14 +23,19 @@ import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.Deserializer;
 import org.apache.kafka.common.serialization.Serializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class KafkaTransformer<IK, IV, OK, OV> {
+    private static final Logger logger = LoggerFactory.getLogger(KafkaTransformer.class);
+
     private BlockingQueue<ConsumerRecord<IK, IV>> inputQueue;
     private Map<Integer, BlockingQueue<OffsetStatus>> pendingByPartition;
 
     private KafkaConsumer<IK, IV> kafkaConsumer;
     private KafkaProducer<OK, OV> kafkaProducer;
     
+    private FilterFunc<IK, IV> include;
     private TransformFunc<IK, IV, OK, OV> function;
     
     private InputIOThread inputIOThread;
@@ -39,14 +44,14 @@ public class KafkaTransformer<IK, IV, OK, OV> {
     private String groupId;
     private String inBrokerList;
     private String inTopic;
-    private List<Integer> inPartitions;
+    private int[] inPartitions;
     private String outBrokerList;
     private String outTopic;
-    private Class<Deserializer<IK>> keyDeserializer;
-    private Class<Deserializer<IV>> valueDeserializer;
-    private Class<Serializer<OK>> keySerializer;
-    private Class<Serializer<OV>> valueSerializer;
-    private Class<Partitioner> partitioner;
+    private Class<? extends Deserializer<IK>> keyDeserializer;
+    private Class<? extends Deserializer<IV>> valueDeserializer;
+    private Class<? extends Serializer<OK>> keySerializer;
+    private Class<? extends Serializer<OV>> valueSerializer;
+    private Class<? extends Partitioner> partitioner;
     private Properties otherProps;
     
     private volatile boolean shouldExit = false;
@@ -56,14 +61,15 @@ public class KafkaTransformer<IK, IV, OK, OV> {
     private int pendingCapacity = 500;
     
     public KafkaTransformer(String groupId,
-                            String inBrokerList, String inTopic, List<Integer> inPartitions,
+                            String inBrokerList, String inTopic, int[] inPartitions,
                             String outBrokerList, String outTopic,
-                            Class<Deserializer<IK>> keyDeserializer,
-                            Class<Deserializer<IV>> valueDeserializer,
-                            Class<Serializer<OK>> keySerializer,
-                            Class<Serializer<OV>> valueSerializer,
-                            Class<Partitioner> partitioner,
+                            Class<? extends Deserializer<IK>> keyDeserializer,
+                            Class<? extends Deserializer<IV>> valueDeserializer,
+                            Class<? extends Serializer<OK>> keySerializer,
+                            Class<? extends Serializer<OV>> valueSerializer,
+                            Class<? extends Partitioner> partitioner,
                             Properties config,
+                            FilterFunc<IK, IV> include,
                             TransformFunc<IK, IV, OK, OV> function) {
 
         this.groupId = groupId;
@@ -83,6 +89,7 @@ public class KafkaTransformer<IK, IV, OK, OV> {
             this.outBrokerList = inBrokerList;
         }
 
+        this.include = include;
         this.function = function;
 
         kafkaConsumer = new KafkaConsumer<>(createConsumerProps());
@@ -122,14 +129,14 @@ public class KafkaTransformer<IK, IV, OK, OV> {
 
     private void initializePendingQueues() {
         pendingByPartition = new ConcurrentHashMap<>();
-        for(Integer partition: inPartitions) {
+        for(int partition: inPartitions) {
             pendingByPartition.put(partition, new ArrayBlockingQueue<OffsetStatus>(pendingCapacity));
         }
     }
 
     private List<TopicPartition> getInTopicPartitions() {
         List<TopicPartition> tps = new ArrayList<>();
-        for (Integer p: inPartitions) {
+        for (int p: inPartitions) {
             tps.add(new TopicPartition(inTopic, p));
         }
         return tps;
@@ -155,15 +162,20 @@ public class KafkaTransformer<IK, IV, OK, OV> {
 
     private OffsetAndMetadata createPartitionCommit(BlockingQueue<OffsetStatus> pendingQueue) {
         long offset = -1;
+        int count = 0;
         for (OffsetStatus status: pendingQueue) {
             if (status.isConsumed()) {
                 offset = status.getOffset();
+                ++count;
             }else{
                 break;
             }
         }
         if (offset > 0) {
-            return new OffsetAndMetadata(offset);
+            for (int i=0; i<count; ++i) {
+                pendingQueue.poll();
+            }
+            return new OffsetAndMetadata(offset+1);
         }else{
             return null;
         }
@@ -176,11 +188,28 @@ public class KafkaTransformer<IK, IV, OK, OV> {
         return inputQueue.size() <= inputQueueCapacity/2;
     }
 
+    private boolean shouldInclude(IK key, IV value) {
+        if (include == null) {
+            return true;
+        }else{
+            return include.apply(key, value);
+        }
+    }
+
     class InputIOThread extends Thread {
         volatile boolean shouldClose = false;
 
         @Override
         public void run() {
+            List<TopicPartition> tps = getInTopicPartitions();
+            for (TopicPartition tp: tps) {
+                OffsetAndMetadata offset = kafkaConsumer.committed(tp);
+                if (offset == null) {
+                    logger.debug("{} has no prior commit", tp);
+                }else {
+                    logger.debug("{} has committed offset {}", tp, offset);
+                }
+            }
             kafkaConsumer.assign(getInTopicPartitions());
             while(!shouldClose) {
                 doCommitIfNecessary();
@@ -190,7 +219,11 @@ public class KafkaTransformer<IK, IV, OK, OV> {
                 }
                 ConsumerRecords<IK, IV> records = kafkaConsumer.poll(pollingTimeoutMs);
                 for(ConsumerRecord<IK, IV> record: records) {
+                    if (!shouldInclude(record.key(), record.value())) {
+                        continue;
+                    }
                     try {
+                        logger.debug("adding {} to input queue", record);
                         inputQueue.put(record);
                     } catch (InterruptedException e) {
                         // this is not a possible execution path.
@@ -203,11 +236,15 @@ public class KafkaTransformer<IK, IV, OK, OV> {
                 
             }
 
+            logger.debug("exit IO thread because shouldClose=true");
             doCommitIfNecessary();
+            logger.debug("committed those that are secured in the output topic.");
             kafkaConsumer.close();
+            logger.debug("consumer gracefully closed");
         }
         
         public void close() {
+            logger.debug("flag shouldClose for the IO thread");
             this.shouldClose = true;
         }
     }
@@ -225,7 +262,13 @@ public class KafkaTransformer<IK, IV, OK, OV> {
                 this.offsetStatus.setConsumed(true);
             }else {
                 // Report a critical error and shutdown. We rely on external task manager to restart the transformer when the critial error is resolved.
-                shutdown();
+                new Thread(new Runnable() {
+                    
+                    @Override
+                    public void run() {
+                        shutdown();
+                    }
+                }, "producer-error-panic-thread").start();
             }
         }
     }
@@ -243,6 +286,7 @@ public class KafkaTransformer<IK, IV, OK, OV> {
         while(!shouldExit) {
             try {
                 ConsumerRecord<IK, IV> cr = inputQueue.take();
+                logger.debug("processing {}", cr);
                 Record<OK, OV> record = function.apply(new Record<IK, IV>(cr.key(), cr.value()));
                 if (record != null) {
                     ProducerRecord<OK, OV> pr = new ProducerRecord<>(outTopic, record.getKey(), record.getValue());
@@ -252,15 +296,19 @@ public class KafkaTransformer<IK, IV, OK, OV> {
                 }
             } catch (InterruptedException e) {
                 // continue while loop
+                logger.debug("main thread is interrupted during blocking IO");
             }
         }
+        logger.debug("ensure all sent messages are secured in the output topic.");
         kafkaProducer.close();
+        logger.debug("producer gracefully closed.");
 
         inputIOThread.close();
-        
+        logger.debug("waiting for IO thread to exit.");
         try {
             inputIOThread.join();
         } catch (InterruptedException e) {
+            logger.error("main thread interrupted during wait", e);
         }
     }
 
@@ -268,7 +316,15 @@ public class KafkaTransformer<IK, IV, OK, OV> {
      * You should call this method from threads other than the main.
      */
     public void shutdown() {
+        logger.debug("flag shouldExit for the main thread and interrupt it.");
+
         shouldExit = true;
         mainThread.interrupt();
+        try {
+            mainThread.join();
+        } catch (InterruptedException e) {
+            // this is not possible execution path.
+            logger.error("shutdown hook thread interrupted during wait", e);
+        }
     }
 }
