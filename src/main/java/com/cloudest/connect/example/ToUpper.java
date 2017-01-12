@@ -9,6 +9,7 @@ import org.apache.kafka.common.serialization.StringSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.cloudest.connect.KafkaRecordWriter;
 import com.cloudest.connect.KafkaTransformer;
 import com.cloudest.connect.Record;
 import com.cloudest.connect.TransformFunc;
@@ -34,13 +35,17 @@ public class ToUpper {
             }
         };
 
+        final KafkaRecordWriter<String, String> writer = new KafkaRecordWriter<>(options.get("brokers"),
+                                                                                 options.get("output-topic"),
+                                                                                 StringSerializer.class,
+                                                                                 StringSerializer.class,
+                                                                                 DefaultPartitioner.class,
+                                                                                 new Properties()); 
+        
         final KafkaTransformer<String, String, String, String> transformer = new KafkaTransformer<String, String, String, String>(options.get("group"),
                 options.get("brokers"), options.get("input-topic"), options.getMultiAsInt("partitions"),
-                options.get("brokers"), options.get("output-topic"),
-                StringDeserializer.class, StringDeserializer.class,
-                StringSerializer.class, StringSerializer.class,
-                DefaultPartitioner.class, new Properties(),
-                null, toUpper);
+                StringDeserializer.class, StringDeserializer.class, new Properties(),
+                null, toUpper, writer);
         
         Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
             

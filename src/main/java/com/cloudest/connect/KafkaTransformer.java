@@ -33,7 +33,7 @@ public class KafkaTransformer<IK, IV, OK, OV> {
     private Map<Integer, BlockingQueue<OffsetStatus>> pendingByPartition;
 
     private KafkaConsumer<IK, IV> kafkaConsumer;
-    private KafkaProducer<OK, OV> kafkaProducer;
+    private RecordWriter<OK, OV> writer;
     
     private FilterFunc<IK, IV> include;
     private TransformFunc<IK, IV, OK, OV> function;
@@ -45,13 +45,8 @@ public class KafkaTransformer<IK, IV, OK, OV> {
     private String inBrokerList;
     private String inTopic;
     private int[] inPartitions;
-    private String outBrokerList;
-    private String outTopic;
     private Class<? extends Deserializer<IK>> keyDeserializer;
     private Class<? extends Deserializer<IV>> valueDeserializer;
-    private Class<? extends Serializer<OK>> keySerializer;
-    private Class<? extends Serializer<OV>> valueSerializer;
-    private Class<? extends Partitioner> partitioner;
     private Properties otherProps;
     
     private volatile boolean shouldExit = false;
@@ -62,39 +57,27 @@ public class KafkaTransformer<IK, IV, OK, OV> {
     
     public KafkaTransformer(String groupId,
                             String inBrokerList, String inTopic, int[] inPartitions,
-                            String outBrokerList, String outTopic,
                             Class<? extends Deserializer<IK>> keyDeserializer,
                             Class<? extends Deserializer<IV>> valueDeserializer,
-                            Class<? extends Serializer<OK>> keySerializer,
-                            Class<? extends Serializer<OV>> valueSerializer,
-                            Class<? extends Partitioner> partitioner,
                             Properties config,
                             FilterFunc<IK, IV> include,
-                            TransformFunc<IK, IV, OK, OV> function) {
+                            TransformFunc<IK, IV, OK, OV> function,
+                            RecordWriter<OK, OV> writer) {
 
         this.groupId = groupId;
         this.inBrokerList = inBrokerList;
         this.inTopic = inTopic;
         this.inPartitions = inPartitions;
-        this.outBrokerList = outBrokerList;
-        this.outTopic = outTopic;
         this.keyDeserializer = keyDeserializer;
         this.valueDeserializer = valueDeserializer;
-        this.keySerializer = keySerializer;
-        this.valueSerializer = valueSerializer;
-        this.partitioner = partitioner;
         this.otherProps = config;
         
-        if (this.outBrokerList == null) {
-            this.outBrokerList = inBrokerList;
-        }
 
         this.include = include;
         this.function = function;
+        this.writer = writer;
 
         kafkaConsumer = new KafkaConsumer<>(createConsumerProps());
-
-        kafkaProducer = new KafkaProducer<>(createProducerProps());
 
         inputQueue = new ArrayBlockingQueue<>(inputQueueCapacity*2);
 
@@ -112,18 +95,6 @@ public class KafkaTransformer<IK, IV, OK, OV> {
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, keyDeserializer);
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, valueDeserializer);
-        return props;
-    }
-
-    private Properties createProducerProps() {
-        Properties props = new Properties();
-        props.putAll(this.otherProps);
-        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, outBrokerList);
-        props.put(ProducerConfig.RETRIES_CONFIG, 5);
-        props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 600000);
-        props.put(ProducerConfig.PARTITIONER_CLASS_CONFIG, partitioner);
-        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, keySerializer);
-        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, valueSerializer);
         return props;
     }
 
@@ -249,27 +220,28 @@ public class KafkaTransformer<IK, IV, OK, OV> {
         }
     }
     
-    class ProducerCallback implements Callback {
+    class DefaultRecordWriterCallback implements RecordWriterCallback{
         OffsetStatus offsetStatus;
 
-        ProducerCallback(OffsetStatus offsetStatus) {
+        DefaultRecordWriterCallback(OffsetStatus offsetStatus) {
             this.offsetStatus = offsetStatus;
         }
         
         @Override
-        public void onCompletion(RecordMetadata metadata, Exception exception) {
-            if (exception == null) {
-                this.offsetStatus.setConsumed(true);
-            }else {
-                // Report a critical error and shutdown. We rely on external task manager to restart the transformer when the critial error is resolved.
-                new Thread(new Runnable() {
-                    
-                    @Override
-                    public void run() {
-                        shutdown();
-                    }
-                }, "producer-error-panic-thread").start();
-            }
+        public void onSuccess() {
+            this.offsetStatus.setConsumed(true);
+        }
+
+        @Override
+        public void onError(Exception ex) {
+            new Thread(new Runnable() {
+                
+                @Override
+                public void run() {
+                    shutdown();
+                }
+            }, "producer-error-panic-thread").start();
+            
         }
     }
 
@@ -289,10 +261,9 @@ public class KafkaTransformer<IK, IV, OK, OV> {
                 logger.debug("processing {}", cr);
                 Record<OK, OV> record = function.apply(new Record<IK, IV>(cr.key(), cr.value()));
                 if (record != null) {
-                    ProducerRecord<OK, OV> pr = new ProducerRecord<>(outTopic, record.getKey(), record.getValue());
                     
                     OffsetStatus offsetStatus = addPending(cr);
-                    kafkaProducer.send(pr, new ProducerCallback(offsetStatus));
+                    writer.write(record, new DefaultRecordWriterCallback(offsetStatus));
                 }
             } catch (InterruptedException e) {
                 // continue while loop
@@ -300,7 +271,7 @@ public class KafkaTransformer<IK, IV, OK, OV> {
             }
         }
         logger.debug("ensure all sent messages are secured in the output topic.");
-        kafkaProducer.close();
+        writer.close();
         logger.debug("producer gracefully closed.");
 
         inputIOThread.close();
