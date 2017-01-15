@@ -14,15 +14,8 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
-import org.apache.kafka.clients.producer.Callback;
-import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.Partitioner;
-import org.apache.kafka.clients.producer.ProducerConfig;
-import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.Deserializer;
-import org.apache.kafka.common.serialization.Serializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,7 +47,9 @@ public class KafkaTransformer<IK, IV, OK, OV> {
 
     private int inputQueueCapacity = 5000;
     private int pendingCapacity = 500;
-    
+
+    private boolean resetOffset;
+
     public KafkaTransformer(String groupId,
                             String inBrokerList, String inTopic, int[] inPartitions,
                             Class<? extends Deserializer<IK>> keyDeserializer,
@@ -62,7 +57,8 @@ public class KafkaTransformer<IK, IV, OK, OV> {
                             Properties config,
                             FilterFunc<IK, IV> include,
                             TransformFunc<IK, IV, OK, OV> function,
-                            RecordWriter<OK, OV> writer) {
+                            RecordWriter<OK, OV> writer,
+                            boolean resetOffset) {
 
         this.groupId = groupId;
         this.inBrokerList = inBrokerList;
@@ -71,6 +67,7 @@ public class KafkaTransformer<IK, IV, OK, OV> {
         this.keyDeserializer = keyDeserializer;
         this.valueDeserializer = valueDeserializer;
         this.otherProps = config;
+        this.resetOffset = resetOffset;
         
 
         this.include = include;
@@ -173,6 +170,8 @@ public class KafkaTransformer<IK, IV, OK, OV> {
         @Override
         public void run() {
             List<TopicPartition> tps = getInTopicPartitions();
+            kafkaConsumer.assign(tps);
+
             for (TopicPartition tp: tps) {
                 OffsetAndMetadata offset = kafkaConsumer.committed(tp);
                 if (offset == null) {
@@ -181,7 +180,12 @@ public class KafkaTransformer<IK, IV, OK, OV> {
                     logger.debug("{} has committed offset {}", tp, offset);
                 }
             }
-            kafkaConsumer.assign(getInTopicPartitions());
+
+            if (resetOffset) {
+                logger.debug("reset offsets to beggining of assigned partitions");
+                kafkaConsumer.seekToBeginning(tps);
+            }
+
             while(!shouldClose) {
                 doCommitIfNecessary();
                 
@@ -209,7 +213,7 @@ public class KafkaTransformer<IK, IV, OK, OV> {
 
             logger.debug("exit IO thread because shouldClose=true");
             doCommitIfNecessary();
-            logger.debug("committed those that are secured in the output topic.");
+            logger.debug("committed those that are flushed out of the writer.");
             kafkaConsumer.close();
             logger.debug("consumer gracefully closed");
         }
@@ -270,7 +274,7 @@ public class KafkaTransformer<IK, IV, OK, OV> {
                 logger.debug("main thread is interrupted during blocking IO");
             }
         }
-        logger.debug("ensure all sent messages are secured in the output topic.");
+        logger.debug("ensure all sent messages are flushed out of the writer.");
         writer.close();
         logger.debug("producer gracefully closed.");
 

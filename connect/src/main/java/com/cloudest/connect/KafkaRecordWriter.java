@@ -8,7 +8,6 @@ import org.apache.kafka.clients.producer.Partitioner;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
-import org.apache.kafka.common.serialization.Deserializer;
 import org.apache.kafka.common.serialization.Serializer;
 
 public class KafkaRecordWriter<K, V> implements RecordWriter<K, V> {
@@ -16,14 +15,14 @@ public class KafkaRecordWriter<K, V> implements RecordWriter<K, V> {
     private String brokerList;
     private String topic;
     private Class<? extends Serializer<K>> keySerializer;
-    private Class<? extends Serializer<V>> valueSerializer;
+    private Class<? extends Serializer<? super V>> valueSerializer;
     private Class<? extends Partitioner> partitioner;
     private Properties otherProps;
     private KafkaProducer<K, V> producer;
 
     public KafkaRecordWriter(String brokerList, String topic,
                              Class<? extends Serializer<K>> keySerializer,
-                             Class<? extends Serializer<V>> valueSerializer,
+                             Class<? extends Serializer<? super V>> valueSerializer,
                              Class<? extends Partitioner> partitioner,
                              Properties config) {
 

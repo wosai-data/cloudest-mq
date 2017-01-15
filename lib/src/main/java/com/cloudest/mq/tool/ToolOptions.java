@@ -15,6 +15,14 @@ public class ToolOptions {
     private HelpFormatter formatter = new HelpFormatter();
     private CommandLine cmd;
 
+    private String toolName;
+    public ToolOptions(String toolName) {
+        this.toolName = toolName;
+    }
+    public ToolOptions() {
+        this("tool");
+    }
+
     public void addBrokers() {
         options.addOption(Option.builder("B")
                           .hasArg()
@@ -39,7 +47,7 @@ public class ToolOptions {
             return true;
         }catch(ParseException ex) {
             System.out.println(ex.getMessage());
-            formatter.printHelp("tool", options, true);
+            formatter.printHelp(toolName, options, true);
             return false;
         }
 
