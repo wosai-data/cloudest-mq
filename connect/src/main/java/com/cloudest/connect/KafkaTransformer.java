@@ -19,6 +19,11 @@ import org.apache.kafka.common.serialization.Deserializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * @deprecated use {@link KafkaTransformer2}
+ * @author dun
+ *
+ */
 public class KafkaTransformer<IK, IV, OK, OV> {
     private static final Logger logger = LoggerFactory.getLogger(KafkaTransformer.class);
 

@@ -116,6 +116,8 @@ public class KafkaTransformer2<IK, IV, OK, OV> extends KafkaStreamProcessor<IK, 
 
         @Override
         public void onError(Exception ex) {
+            logger.error("abort on procucer error", ex);
+
             new Thread(new Runnable() {
                 
                 @Override
@@ -156,7 +158,7 @@ public class KafkaTransformer2<IK, IV, OK, OV> extends KafkaStreamProcessor<IK, 
     }
 
     @Override
-    protected void preMainThreadExit() {
+    protected void preProcessorThreadExit() {
         writer.close();
     }
 

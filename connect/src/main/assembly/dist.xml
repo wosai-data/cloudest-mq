@@ -13,6 +13,10 @@
       <outputDirectory>bin</outputDirectory>
       <fileMode>0755</fileMode>
     </fileSet>
+    <fileSet>
+      <directory>config</directory>
+      <outputDirectory>conf</outputDirectory>
+    </fileSet>
   </fileSets>
 
   <dependencySets>

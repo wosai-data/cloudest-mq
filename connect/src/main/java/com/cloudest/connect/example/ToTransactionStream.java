@@ -4,8 +4,15 @@ import io.confluent.kafka.serializers.KafkaAvroDeserializer;
 import io.confluent.kafka.serializers.KafkaAvroSerializer;
 import io.confluent.kafka.serializers.KafkaAvroSerializerConfig;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 
+import org.apache.avro.Schema;
+import org.apache.avro.SchemaBuilder;
+import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.commons.cli.Option;
 import org.apache.commons.cli.OptionGroup;
@@ -28,7 +35,35 @@ public class ToTransactionStream {
         return (status / 1000) == 2;
     }
 
+    private static Map<Schema, Schema> schemaVariations = new HashMap<Schema, Schema>();
+
+    private static GenericRecord shallowCopyFrom(GenericRecord src, String schemaNamespace, String schemaName) {
+        Schema sourceSchema = src.getSchema();
+        Schema targetSchema = Schema.createRecord(schemaName, "", schemaNamespace, false);
+        List<Schema.Field> sourceFields = sourceSchema.getFields();
+        List<Schema.Field> targetFields = new ArrayList<Schema.Field>();
+        for (Schema.Field field: sourceFields) {
+            targetFields.add(new Schema.Field(field.name(), field.schema(), field.doc(), field.defaultValue(), field.order()));
+        }
+        targetSchema.setFields(targetFields);
+
+        if (schemaVariations.containsKey(targetSchema)) {
+            targetSchema = schemaVariations.get(targetSchema);
+        } else {
+            schemaVariations.put(targetSchema, targetSchema);
+        }
+
+        GenericRecord target = new GenericData.Record(targetSchema);
+        for (Schema.Field field: sourceFields) {
+            target.put(field.name(), src.get(field.name()));
+        }
+        return target;
+    }
+
     public void run(ToolOptions options) {
+        final String schemaNamespace = options.get("schema-namespace");
+        final String schemaName = options.get("schema-name");
+
         TransformFunc<Object, Object, String, GenericRecord> extractAfter = new TransformFunc<Object, Object, String, GenericRecord>() {
 
             @Override
@@ -37,7 +72,7 @@ public class ToTransactionStream {
                 GenericRecord value = (GenericRecord)input.getValue();
                 String id = key.get("id").toString();
                 GenericRecord after = (GenericRecord)value.get("after");
-                return new Record<String, GenericRecord>(id, after);
+                return new Record<String, GenericRecord>(id, shallowCopyFrom(after, schemaNamespace, schemaName));
             }
         };
         
@@ -50,15 +85,16 @@ public class ToTransactionStream {
                 String op = ((GenericRecord)value).get("op").toString();
 
                 if ("c".equals(op)) {
-                    int statusAfter = ((Number)after.get("status")).intValue();
-                    if (isFinalTransactionStatus(statusAfter)) {
+                    Object paidAmount = after.get("paid_amount");
+                    if (paidAmount != null) {
                         return true;
                     }
 
                 } else if ("u".equals(op)){
-                    int statusBefore = ((Number)before.get("status")).intValue();
-                    int statusAfter = ((Number)after.get("status")).intValue();
-                    if (!isFinalTransactionStatus(statusBefore) && isFinalTransactionStatus(statusAfter)) {
+                    Object paidAmountBefore = before.get("paid_amount");
+                    Object paidAmountAfter = after.get("paid_amount");
+
+                    if (paidAmountBefore == null && paidAmountAfter != null) {
                         return true;
                     }
 
@@ -72,39 +108,67 @@ public class ToTransactionStream {
         Properties config = new Properties();
         config.put(KafkaAvroSerializerConfig.SCHEMA_REGISTRY_URL_CONFIG, schemaRegistryUrl);
 
-        final RecordWriter<String, GenericRecord> writer = options.has("console")?
-                                                           new ConsoleRecordWriter<String, GenericRecord>():
-                                                           new KafkaRecordWriter<String, GenericRecord>(options.get("brokers"),
-                                                                                                        options.get("output-topic"),
-                                                                                                        StringSerializer.class,
-                                                                                                        KafkaAvroSerializer.class,
-                                                                                                        TransactionPartitioner.class,
-                                                                                                        config);
-        
-        final KafkaTransformer2<Object, Object, String, GenericRecord> transformer =
-                new KafkaTransformer2<Object, Object, String, GenericRecord>(options.get("group"),
-                                                                             options.get("brokers"),
-                                                                             options.get("input-topic"),
-                                                                             options.getMultiAsInt("partitions"),
-                                                                             KafkaAvroDeserializer.class,
-                                                                             KafkaAvroDeserializer.class,
-                                                                             config,
-                                                                             includeFinalUpdates,
-                                                                             extractAfter,
-                                                                             writer,
-                                                                             options.has("reset"));
+
+        String[] inputTopics = options.getMulti("input-topic");
+        final List<KafkaTransformer2<Object, Object, String, GenericRecord>> transformers = new ArrayList<>();
+        for (String inputTopic: inputTopics) {
+            String[] fields = inputTopic.split(":");
+            if (fields.length < 2) {
+                logger.error("bad input-topic format: {}", inputTopic);
+                return;
+            }
+            String topic = fields[0];
+            int[] partitions = new int[fields.length-1];
+            for (int i=1; i<fields.length; ++i) {
+                partitions[i-1] = Integer.parseInt(fields[i]);
+            }
+            
+            final RecordWriter<String, GenericRecord> writer = options.has("console")?
+                                                               new ConsoleRecordWriter<String, GenericRecord>():
+                                                               new KafkaRecordWriter<String, GenericRecord>(options.get("brokers"),
+                                                                                                            options.get("output-topic"),
+                                                                                                            KafkaAvroSerializer.class,
+                                                                                                            KafkaAvroSerializer.class,
+                                                                                                            TransactionPartitioner.class,
+                                                                                                            config);
+
+            transformers.add(new KafkaTransformer2<Object, Object, String, GenericRecord>(options.get("group"),
+                                                                                          options.get("brokers"),
+                                                                                          topic,
+                                                                                          partitions,
+                                                                                          KafkaAvroDeserializer.class,
+                                                                                          KafkaAvroDeserializer.class,
+                                                                                          config,
+                                                                                          includeFinalUpdates,
+                                                                                          extractAfter,
+                                                                                          writer,
+                                                                                          options.has("reset")));
+            
+            logger.info("transforming {}", inputTopic);
+
+        }
+
+        for (KafkaTransformer2<Object, Object, String, GenericRecord> transformer: transformers) {
+            transformer.start();
+        }
         
         Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
             
             @Override
             public void run() {
                 logger.info("shutting down transformer ...");
-                transformer.shutdown();
+
+                for (KafkaTransformer2<Object, Object, String, GenericRecord> transformer: transformers) {
+                    transformer.shutdown();
+                }
+                
+                for (KafkaTransformer2<Object, Object, String, GenericRecord> transformer: transformers) {
+                    transformer.processorWait();
+                }
                 
             }
         }));
 
-        transformer.start();
         
     }
 
@@ -133,13 +197,16 @@ public class ToTransactionStream {
         options.add(Option.builder("I").hasArg().argName("input-topic")
                     .longOpt("input-topic")
                     .required()
-                    .desc("topic to fetch messages").build());
+                    .valueSeparator(',')
+                    .desc("specify input-topics in this format <topic_name>:<partition>[:<partition> ...][,<topic_name>:<partition>[<partition> ...]...]").build());
 
+        /*
         options.add(Option.builder("P").hasArgs().argName("partitions")
                     .longOpt("partitions")
                     .required()
                     .valueSeparator(',')
                     .desc("comma seperated partition numbers to fetch messages").build());
+         */
 
         options.add(Option.builder("R")
                     .longOpt("reset")
@@ -158,6 +225,17 @@ public class ToTransactionStream {
         group.setRequired(true);
         options.add(group);
         
+        options.add(Option.builder("N").hasArg().argName("schema-name")
+                    .longOpt("schema-name")
+                    .required()
+                    .desc("schema name of the output record").build());
+
+        options.add(Option.builder("P").hasArg().argName("schema-namespace")
+                    .longOpt("schema-namespace")
+                    .required()
+                    .desc("schema namespace of the output record").build());
+
+
         if (!options.parse(args)) {
             return;
         }

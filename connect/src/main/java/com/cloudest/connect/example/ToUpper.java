@@ -56,7 +56,7 @@ public class ToUpper {
             @Override
             public void run() {
                 logger.info("shutting down transformer ...");
-                transformer.shutdown();
+                transformer.shutdownAndWait();
                 
             }
         }));

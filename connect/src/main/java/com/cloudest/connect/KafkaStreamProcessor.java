@@ -26,7 +26,7 @@ public abstract class KafkaStreamProcessor<IK, IV> {
     protected FilterFunc<IK, IV> include;
     
     protected InputIOThread inputIOThread;
-    protected Thread mainThread;
+    protected ProcessorThread processorThread;
     
     protected String groupId;
     protected String inBrokerList;
@@ -63,7 +63,6 @@ public abstract class KafkaStreamProcessor<IK, IV> {
 
         inputQueue = new ArrayBlockingQueue<>(inputQueueCapacity*2);
 
-        inputIOThread = new InputIOThread();
     }
 
     private Properties createConsumerProps() {
@@ -104,7 +103,7 @@ public abstract class KafkaStreamProcessor<IK, IV> {
     protected abstract void initPartitions();
     protected abstract void prePolling();
     protected abstract void preIOThreadExit();
-    protected abstract void preMainThreadExit();
+    protected abstract void preProcessorThreadExit();
     protected abstract void process(ConsumerRecord<IK, IV> record) throws InterruptedException;
 
     class InputIOThread extends Thread {
@@ -164,44 +163,64 @@ public abstract class KafkaStreamProcessor<IK, IV> {
     }
     
 
-    public void start() {
-        inputIOThread.start();
-        mainThread = Thread.currentThread();
-        while(!shouldExit) {
-            try {
-                ConsumerRecord<IK, IV> cr = inputQueue.take();
-                logger.debug("processing {}", cr);
-                process(cr);
-            } catch (InterruptedException e) {
-                // continue while loop
-                logger.debug("main thread is interrupted during blocking IO");
+    class ProcessorThread extends Thread {
+        @Override
+        public void run() {
+            while(!shouldExit) {
+                try {
+                    ConsumerRecord<IK, IV> cr = inputQueue.take();
+                    logger.debug("processing {}", cr);
+                    process(cr);
+                } catch (InterruptedException e) {
+                    // continue while loop
+                    logger.debug("processor thread is interrupted during blocking IO");
+                }
             }
-        }
 
-        preMainThreadExit();
+            preProcessorThreadExit();
 
-        inputIOThread.close();
-        logger.debug("waiting for IO thread to exit.");
-        try {
-            inputIOThread.join();
-        } catch (InterruptedException e) {
-            logger.error("main thread interrupted during wait", e);
+            inputIOThread.close();
+            logger.debug("waiting for IO thread to exit.");
+            try {
+                inputIOThread.join();
+            } catch (InterruptedException e) {
+                logger.error("processor thread interrupted during wait", e);
+            }
+            
         }
     }
 
+    public Thread start() {
+        inputIOThread = new InputIOThread();
+        inputIOThread.start();
+        processorThread = new ProcessorThread();
+        processorThread.start();
+        return processorThread;
+    }
+
     /**
-     * You should call this method from threads other than the main.
+     * You should call this method from threads other than the processor thread.
      */
     public void shutdown() {
-        logger.debug("flag shouldExit for the main thread and interrupt it.");
+        logger.debug("flag shouldExit for the processor thread and interrupt it.");
 
         shouldExit = true;
-        mainThread.interrupt();
+        processorThread.interrupt();
+        
+    }
+
+    public void processorWait() {
         try {
-            mainThread.join();
+            processorThread.join();
         } catch (InterruptedException e) {
             // this is not possible execution path.
             logger.error("shutdown hook thread interrupted during wait", e);
         }
+        
+    }
+
+    public void shutdownAndWait() {
+        shutdown();
+        processorWait();
     }
 }

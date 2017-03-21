@@ -17,4 +17,8 @@ done
 
 echo classpath = $LIBS
 
-java -cp $LIBS $@
+logback_config=$basedir/conf/tools-logback.xml
+
+echo logback_config = ${logback_config}
+
+java -Dlogback.configurationFile=${logback_config} -cp $LIBS $@
