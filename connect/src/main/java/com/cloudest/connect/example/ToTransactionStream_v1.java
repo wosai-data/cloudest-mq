@@ -61,7 +61,7 @@ public class ToTransactionStream_v1 extends AbstractToStream {
 
     public static void main(String[] args){
 
-        ToolOptions options = buildToolOptions("ToOrderStream");
+        ToolOptions options = buildToolOptions("ToTransactionStream_v1");
         if (!options.parse(args)) {
             return;
         }
