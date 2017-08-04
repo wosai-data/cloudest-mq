@@ -170,7 +170,7 @@ public abstract class AbstractToStream {
                 partitions[i - 1] = Integer.parseInt(fields[i]);
             }
 
-            transformers.add(new KafkaTransformer2<>(options.get("group"),
+            transformers.add(new KafkaTransformer2<Object, Object, String, GenericRecord>(options.get("group"),
                     options.get("brokers"),
                     topic,
                     partitions,
