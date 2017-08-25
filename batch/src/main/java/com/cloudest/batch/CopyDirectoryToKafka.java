@@ -61,10 +61,10 @@ public class CopyDirectoryToKafka {
         List<Schema.Field> sourceFields = sourceSchema.getFields();
         List<Schema.Field> targetFields = new ArrayList<Schema.Field>();
         for (Schema.Field field: sourceFields) {
-            targetFields.add(new Schema.Field(field.name(), field.schema(), field.doc(), field.defaultVal(), field.order()));
+            targetFields.add(new Schema.Field(field.name(), field.schema(), field.doc(), field.defaultValue(), field.order()));
         }
         if (extraStringColumn != null) {
-            targetFields.add(new Schema.Field(extraStringColumn, Schema.create(Schema.Type.STRING), "", (String)null, Schema.Field.Order.ASCENDING));
+            targetFields.add(new Schema.Field(extraStringColumn, Schema.create(Schema.Type.STRING), "programmatically added column", null, Schema.Field.Order.ASCENDING));
         }
         targetSchema.setFields(targetFields);
 
