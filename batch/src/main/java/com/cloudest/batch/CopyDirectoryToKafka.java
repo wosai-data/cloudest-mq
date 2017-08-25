@@ -112,6 +112,7 @@ public class CopyDirectoryToKafka {
                 Schema sourceSchema = fileReader.getSchema();
                 Schema targetSchema = copySchema(sourceSchema, addColumn);
                 
+                int count = 0;
                 while(fileReader.hasNext()) {
                     GenericRecord record = fileReader.next();
                     Object keyObject = record.get(keyColumn);
@@ -143,8 +144,11 @@ public class CopyDirectoryToKafka {
                             
                         }
                     });
+                    ++count;
                 }
                 fileReader.close();
+                
+                logger.info("sent {} records from file into kafka topic {}", count, topic);
 
             }
         }
