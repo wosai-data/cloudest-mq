@@ -136,19 +136,19 @@ public class CopyDirectoryToKafka {
                     writer.write(new Record<String, GenericRecord>(key, target), new RecordWriterCallback() {
                         @Override
                         public void onSuccess() {
-                            
+//                            logger.info("successfully sent record to kafka topic.");
                         }
                         
                         @Override
                         public void onError(Exception ex) {
-                            
+                            logger.warn("failed to send record to kafka topic.", ex);
                         }
                     });
                     ++count;
                 }
                 fileReader.close();
                 
-                logger.info("sent {} records from file into kafka topic {}", count, topic);
+                logger.info("moved {} records from file into kafka producer for topic {}", count, topic);
 
             }
         }
